@@ -37,13 +37,20 @@ const ChatPage = () => {
   const [hasMore, setHasMore] = useState(true);
   const [openNewChannelDialog, setOpenNewChannelDialog] = useState(false);
   const [newChannelName, setNewChannelName] = useState('');
+  const [messageInput, setMessageInput] = useState('');
   const socketRef = useRef(null);
+  const messagesEndRef = useRef(null);
 
   useEffect(() => {
     socketRef.current = io('http://localhost:3001');
 
     socketRef.current.on('connect', () => {
       console.log('Connected to socket server');
+    });
+
+    socketRef.current.on('receiveMessage', (message) => {
+      console.log('Received message:', message);
+      setMessages((prevMessages) => [...prevMessages, message]);
     });
 
     fetchChannels();
@@ -68,6 +75,10 @@ const ChatPage = () => {
       }
     };
   }, [currentChannel]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
   const fetchChannels = async () => {
     try {
@@ -108,6 +119,17 @@ const ChatPage = () => {
       setNewChannelName('');
     } catch (error) {
       console.error('Failed to create channel:', error);
+    }
+  };
+
+  const handleSendMessage = () => {
+    if (messageInput.trim() && currentChannel) {
+      socketRef.current.emit('sendMessage', {
+        channelId: currentChannel.id,
+        content: messageInput,
+        userId: user.id, // Assuming user.id is available from AuthContext
+      });
+      setMessageInput('');
     }
   };
 
@@ -159,13 +181,30 @@ const ChatPage = () => {
           <Box sx={{ flexGrow: 1, p: 2, overflowY: 'auto' }}>
             {messages.map((msg) => (
               <Paper key={msg.id} elevation={1} sx={{ p: 2, mb: 2 }}>
-                <Typography variant="body2">{msg.content}</Typography>
+                <Typography variant="caption" display="block" sx={{ color: 'text.secondary' }}>
+                  {msg.user_id} - {new Date(msg.created_at).toLocaleString()}
+                </Typography>
+                <Typography variant="body1">{msg.content}</Typography>
               </Paper>
             ))}
+            <div ref={messagesEndRef} />
           </Box>
           <Box sx={{ p: 2, borderTop: '1px solid #e0e0e0', display: 'flex', alignItems: 'center' }}>
-            <TextField fullWidth variant="outlined" placeholder="メッセージを入力..." size="small" sx={{ mr: 1 }} />
-            <IconButton color="primary" aria-label="send message">
+            <TextField
+              fullWidth
+              variant="outlined"
+              placeholder="メッセージを入力..."
+              size="small"
+              sx={{ mr: 1 }}
+              value={messageInput}
+              onChange={(e) => setMessageInput(e.target.value)}
+              onKeyPress={(e) => {
+                if (e.key === 'Enter') {
+                  handleSendMessage();
+                }
+              }}
+            />
+            <IconButton color="primary" aria-label="send message" onClick={handleSendMessage}>
               <SendIcon />
             </IconButton>
             <IconButton color="default" aria-label="toggle right sidebar" onClick={toggleRightSidebar}>
