@@ -10,6 +10,7 @@ const supabase = require('../config/supabaseClient');
  */
 async function getChannelMessages(channelId, page = 1, limit = 50) {
     const offset = (page - 1) * limit;
+    console.log(`Fetching messages for channelId: ${channelId}, page: ${page}, limit: ${limit}`);
 
     const { data, error } = await supabase
         .from('messages')
@@ -17,10 +18,10 @@ async function getChannelMessages(channelId, page = 1, limit = 50) {
         .eq('channel_id', channelId)
         .is('parent_message_id', null) // 親メッセージのみ取得
         .order('created_at', { ascending: false }) // 新しいメッセージが先頭に来るように
-        .range(offset, offset + limit - 1); // ページネーション
+        .range(offset, offset + limit - 1);
 
     if (error) {
-        console.error('Error fetching messages:', error);
+        console.error('Error fetching messages from Supabase:', error);
         throw new Error('Failed to fetch messages.');
     }
     return data;

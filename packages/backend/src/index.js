@@ -1,33 +1,71 @@
 const express = require('express');
-const session = require('express-session'); // express-sessionをインポート
+const session = require('express-session');
 require('dotenv').config();
 const authRoutes = require('./api/auth.routes');
+const channelRoutes = require('./api/channel.routes');
+const messageRoutes = require('./api/message.routes');
+const http = require('http');
+const { Server } = require("socket.io");
+const messageModel = require('./models/messageModel');
 
 const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+    cors: {
+        origin: "http://localhost:5173",
+        methods: ["GET", "POST"]
+    }
+});
+
 const port = process.env.PORT || 3001;
 
-// JSONリクエストボディを解析するためのミドルウェア
 app.use(express.json());
 
-// セッションミドルウェアの設定
 app.use(session({
     secret: process.env.SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
     cookie: {
-        secure: process.env.NODE_ENV === 'production', // 本番環境ではhttpsを強制
-        maxAge: 1000 * 60 * 60 * 24 // 24時間
+        secure: process.env.NODE_ENV === 'production',
+        maxAge: 1000 * 60 * 60 * 24
     }
 }));
 
-// ルートの設定
 app.get('/api', (req, res) => {
   res.json({ message: 'Welcome to NexSync API' });
 });
 
-// 認証ルートを /api/auth パスにマウント
 app.use('/api/auth', authRoutes);
+app.use('/api/channels', channelRoutes);
+app.use('/api/messages', messageRoutes);
 
-app.listen(port, () => {
+io.on('connection', (socket) => {
+    console.log('a user connected');
+
+    socket.on('joinChannel', (channelId) => {
+        socket.join(channelId);
+        console.log(`User joined channel: ${channelId}`);
+    });
+
+    socket.on('leaveChannel', (channelId) => {
+        socket.leave(channelId);
+        console.log(`User left channel: ${channelId}`);
+    });
+
+    socket.on('sendMessage', async ({ channelId, userId, content }) => {
+        try {
+            const message = await messageModel.createMessage({ channel_id: channelId, user_id: userId, content });
+            io.to(channelId).emit('receiveMessage', message);
+        } catch (error) {
+            console.error('Error sending message:', error);
+        }
+    });
+
+    socket.on('disconnect', () => {
+        console.log('user disconnected');
+    });
+});
+
+server.listen(port, () => {
   console.log(`Server is running on http://localhost:${port}`);
 });

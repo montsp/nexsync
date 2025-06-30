@@ -36,6 +36,14 @@ async function createChannel({ name, description, created_by }) {
         console.error('Error creating channel:', error);
         throw new Error('Failed to create channel.');
     }
+
+    // データが返されなかった場合のチェックを追加
+    if (!data || data.length === 0) {
+        console.error('Channel created, but no data returned. Check RLS policies.');
+        // SupabaseのRLS設定によっては、INSERTは成功してもSELECTが許可されていない場合がある。
+        throw new Error('Failed to create channel: Could not retrieve created channel data. Please check permissions (RLS).');
+    }
+
     return data[0];
 }
 
