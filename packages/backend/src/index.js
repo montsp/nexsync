@@ -52,12 +52,25 @@ io.on('connection', (socket) => {
         console.log(`User left channel: ${channelId}`);
     });
 
-    socket.on('sendMessage', async ({ channelId, userId, content }) => {
+    socket.on('sendMessage', async ({ channelId, userId, content, parent_message_id }, callback) => {
         try {
-            const message = await messageModel.createMessage({ channel_id: channelId, user_id: userId, content });
-            io.to(channelId).emit('receiveMessage', message);
+            const message = await messageModel.createMessage({ channel_id: channelId, user_id: userId, content, parent_message_id });
+            if (parent_message_id) {
+                // スレッドの更新をチャンネルの全員に通知
+                socket.to(channelId).emit('newThreadMessage', message);
+            } else {
+                // 新しいメッセージをチャンネルの全員に通知
+                socket.to(channelId).emit('receiveMessage', message);
+            }
+            // 送信者自身にメッセージを返して即時表示させる
+            if (callback) {
+                callback(message);
+            }
         } catch (error) {
             console.error('Error sending message:', error);
+            if (callback) {
+                callback({ error: 'Failed to send message' });
+            }
         }
     });
 

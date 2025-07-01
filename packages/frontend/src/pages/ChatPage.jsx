@@ -15,7 +15,6 @@ import {
   ListItemText,
   TextField,
   IconButton,
-  Drawer,
   Divider,
   Dialog,
   DialogTitle,
@@ -24,12 +23,12 @@ import {
 } from '@mui/material';
 
 import SendIcon from '@mui/icons-material/Send';
-import InfoIcon from '@mui/icons-material/Info';
 import AddCircleOutlineIcon from '@mui/icons-material/AddCircleOutline';
+import ReplyIcon from '@mui/icons-material/Reply';
+import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 
 const ChatPage = () => {
   const { user, logout } = useAuth();
-  const [isRightSidebarOpen, setRightSidebarOpen] = useState(false);
   const [channels, setChannels] = useState([]);
   const [currentChannel, setCurrentChannel] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -38,6 +37,9 @@ const ChatPage = () => {
   const [openNewChannelDialog, setOpenNewChannelDialog] = useState(false);
   const [newChannelName, setNewChannelName] = useState('');
   const [messageInput, setMessageInput] = useState('');
+  const [currentThread, setCurrentThread] = useState(null);
+  const [threadMessages, setThreadMessages] = useState([]);
+  const [threadRepliesCount, setThreadRepliesCount] = useState({});
   const socketRef = useRef(null);
   const messagesEndRef = useRef(null);
 
@@ -51,6 +53,17 @@ const ChatPage = () => {
     socketRef.current.on('receiveMessage', (message) => {
       console.log('Received message:', message);
       setMessages((prevMessages) => [...prevMessages, message]);
+    });
+
+    socketRef.current.on('newThreadMessage', (message) => {
+        console.log('Received new thread message:', message);
+        if (currentThread && message.parent_message_id === currentThread.id) {
+            setThreadMessages((prev) => [...prev, message]);
+        }
+        setThreadRepliesCount(prev => ({
+            ...prev,
+            [message.parent_message_id]: (prev[message.parent_message_id] || 0) + 1
+        }));
     });
 
     fetchChannels();
@@ -67,6 +80,7 @@ const ChatPage = () => {
       setHasMore(true);
       fetchMessages(currentChannel.id, 1);
       socketRef.current.emit('joinChannel', currentChannel.id);
+      setCurrentThread(null); // チャンネル切り替え時にスレッドを閉じる
     }
 
     return () => {
@@ -78,7 +92,7 @@ const ChatPage = () => {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [messages, threadMessages]);
 
   const fetchChannels = async () => {
     try {
@@ -127,19 +141,138 @@ const ChatPage = () => {
       socketRef.current.emit('sendMessage', {
         channelId: currentChannel.id,
         content: messageInput,
-        userId: user.id, // Assuming user.id is available from AuthContext
+        userId: user.id,
+      }, (newMessage) => {
+        if (!newMessage.error) {
+            setMessages((prev) => [...prev, newMessage]);
+        }
       });
       setMessageInput('');
     }
+  };
+
+  const handleSendThreadMessage = (threadMessage) => {
+    if (threadMessage.trim() && currentThread) {
+        socketRef.current.emit('sendMessage', {
+            channelId: currentChannel.id,
+            content: threadMessage,
+            userId: user.id,
+            parent_message_id: currentThread.id,
+        }, (newMessage) => {
+            if (!newMessage.error) {
+                setThreadMessages((prev) => [...prev, newMessage]);
+            }
+        });
+    }
+  };
+
+  const openThread = async (message) => {
+    setCurrentThread(message);
+    try {
+        const response = await fetch(`/api/messages/${message.id}/thread`);
+        const data = await response.json();
+        setThreadMessages(data);
+    } catch (error) {
+        console.error('Failed to fetch thread messages:', error);
+    }
+  };
+
+  const closeThread = () => {
+    setCurrentThread(null);
+    setThreadMessages([]);
   };
 
   const handleLogout = async () => {
     await logout();
   };
 
-  const toggleRightSidebar = () => {
-    setRightSidebarOpen(!isRightSidebarOpen);
-  };
+  const renderMainChat = () => (
+    <Grid item xs={9} sx={{ display: 'flex', flexDirection: 'column' }}>
+        <Box sx={{ flexGrow: 1, p: 2, overflowY: 'auto' }}>
+        {messages.map((msg) => (
+            <Paper key={msg.id} elevation={1} sx={{ p: 2, mb: 2 }}>
+            <Typography variant="caption" display="block" sx={{ color: 'text.secondary' }}>
+                {msg.user_id} - {new Date(msg.created_at).toLocaleString()}
+            </Typography>
+            <Typography variant="body1">{msg.content}</Typography>
+            <IconButton size="small" onClick={() => openThread(msg)}>
+                <ReplyIcon />
+            </IconButton>
+            {threadRepliesCount[msg.id] > 0 && (
+                <Button size="small" onClick={() => openThread(msg)}>
+                    {threadRepliesCount[msg.id]}件の返信
+                </Button>
+            )}
+            </Paper>
+        ))}
+        <div ref={messagesEndRef} />
+        </Box>
+        <Box sx={{ p: 2, borderTop: '1px solid #e0e0e0', display: 'flex', alignItems: 'center' }}>
+        <TextField
+            fullWidth
+            variant="outlined"
+            placeholder="メッセージを入力..."
+            size="small"
+            sx={{ mr: 1 }}
+            value={messageInput}
+            onChange={(e) => setMessageInput(e.target.value)}
+            onKeyPress={(e) => {
+            if (e.key === 'Enter') {
+                handleSendMessage();
+            }
+            }}
+        />
+        <IconButton color="primary" aria-label="send message" onClick={handleSendMessage}>
+            <SendIcon />
+        </IconButton>
+        </Box>
+    </Grid>
+  );
+
+  const renderThreadView = () => (
+    <Grid item xs={9} sx={{ display: 'flex', flexDirection: 'column' }}>
+        <Box sx={{ p: 2, borderBottom: '1px solid #e0e0e0', display: 'flex', alignItems: 'center' }}>
+            <IconButton onClick={closeThread}>
+                <ArrowBackIcon />
+            </IconButton>
+            <Typography variant="h6" sx={{ ml: 1 }}>スレッド</Typography>
+        </Box>
+        <Box sx={{ flexGrow: 1, p: 2, overflowY: 'auto' }}>
+            {currentThread && (
+                <Paper elevation={1} sx={{ p: 2, mb: 2, backgroundColor: '#f0f0f0' }}>
+                    <Typography variant="caption" display="block" sx={{ color: 'text.secondary' }}>
+                        {currentThread.user_id} - {new Date(currentThread.created_at).toLocaleString()}
+                    </Typography>
+                    <Typography variant="body1">{currentThread.content}</Typography>
+                </Paper>
+            )}
+            <Divider>返信</Divider>
+            {threadMessages.map((msg) => (
+                <Paper key={msg.id} elevation={1} sx={{ p: 2, mt: 2 }}>
+                    <Typography variant="caption" display="block" sx={{ color: 'text.secondary' }}>
+                        {msg.user_id} - {new Date(msg.created_at).toLocaleString()}
+                    </Typography>
+                    <Typography variant="body1">{msg.content}</Typography>
+                </Paper>
+            ))}
+            <div ref={messagesEndRef} />
+        </Box>
+        <Box sx={{ p: 2, borderTop: '1px solid #e0e0e0' }}>
+            <TextField
+                fullWidth
+                variant="outlined"
+                placeholder="返信を入力..."
+                size="small"
+                onKeyPress={(e) => {
+                    if (e.key === 'Enter' && e.target.value.trim()) {
+                        handleSendThreadMessage(e.target.value);
+                        e.target.value = '';
+                    }
+                }}
+            />
+        </Box>
+    </Grid>
+  );
 
   return (
     <Box sx={{ flexGrow: 1, height: '100vh', display: 'flex', flexDirection: 'column' }}>
@@ -177,51 +310,9 @@ const ChatPage = () => {
           </Box>
         </Grid>
 
-        <Grid item xs={9} sx={{ display: 'flex', flexDirection: 'column' }}>
-          <Box sx={{ flexGrow: 1, p: 2, overflowY: 'auto' }}>
-            {messages.map((msg) => (
-              <Paper key={msg.id} elevation={1} sx={{ p: 2, mb: 2 }}>
-                <Typography variant="caption" display="block" sx={{ color: 'text.secondary' }}>
-                  {msg.user_id} - {new Date(msg.created_at).toLocaleString()}
-                </Typography>
-                <Typography variant="body1">{msg.content}</Typography>
-              </Paper>
-            ))}
-            <div ref={messagesEndRef} />
-          </Box>
-          <Box sx={{ p: 2, borderTop: '1px solid #e0e0e0', display: 'flex', alignItems: 'center' }}>
-            <TextField
-              fullWidth
-              variant="outlined"
-              placeholder="メッセージを入力..."
-              size="small"
-              sx={{ mr: 1 }}
-              value={messageInput}
-              onChange={(e) => setMessageInput(e.target.value)}
-              onKeyPress={(e) => {
-                if (e.key === 'Enter') {
-                  handleSendMessage();
-                }
-              }}
-            />
-            <IconButton color="primary" aria-label="send message" onClick={handleSendMessage}>
-              <SendIcon />
-            </IconButton>
-            <IconButton color="default" aria-label="toggle right sidebar" onClick={toggleRightSidebar}>
-              <InfoIcon />
-            </IconButton>
-          </Box>
-        </Grid>
-      </Grid>
+        {currentThread ? renderThreadView() : renderMainChat()}
 
-      <Drawer anchor="right" open={isRightSidebarOpen} onClose={toggleRightSidebar} PaperProps={{ sx: { width: 300 } }}>
-        <Box sx={{ p: 2 }}>
-          <Typography variant="h6" gutterBottom>スレッド / ファイル詳細</Typography>
-          <Divider sx={{ mb: 2 }} />
-          <Typography variant="body2">ここにスレッドのメッセージや、選択されたファイルのプレビュー・詳細が表示されます。</Typography>
-          <Button onClick={toggleRightSidebar} sx={{ mt: 2 }}>閉じる</Button>
-        </Box>
-      </Drawer>
+      </Grid>
 
       <Dialog open={openNewChannelDialog} onClose={() => setOpenNewChannelDialog(false)}>
         <DialogTitle>新しいチャンネルを作成</DialogTitle>
