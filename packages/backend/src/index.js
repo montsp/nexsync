@@ -4,6 +4,7 @@ require('dotenv').config();
 const authRoutes = require('./api/auth.routes');
 const channelRoutes = require('./api/channel.routes');
 const messageRoutes = require('./api/message.routes');
+const fileRoutes = require('./api/file.routes');
 const http = require('http');
 const { Server } = require("socket.io");
 const messageModel = require('./models/messageModel');
@@ -38,6 +39,7 @@ app.get('/api', (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/channels', channelRoutes);
 app.use('/api/messages', messageRoutes);
+app.use('/api/files', fileRoutes);
 
 io.on('connection', (socket) => {
     console.log('a user connected');
@@ -56,11 +58,11 @@ io.on('connection', (socket) => {
         try {
             const message = await messageModel.createMessage({ channel_id: channelId, user_id: userId, content, parent_message_id });
             if (parent_message_id) {
-                // スレッドの更新をチャンネルの全員に通知
-                socket.to(channelId).emit('newThreadMessage', message);
+                // スレッドの更新を「送信者以外の」チャンネルの全員に通知
+                socket.broadcast.to(channelId).emit('newThreadMessage', message);
             } else {
-                // 新しいメッセージをチャンネルの全員に通知
-                socket.to(channelId).emit('receiveMessage', message);
+                // 新しいメッセージを「送信者以外の」チャンネルの全員に通知
+                socket.broadcast.to(channelId).emit('receiveMessage', message);
             }
             // 送信者自身にメッセージを返して即時表示させる
             if (callback) {

@@ -1,68 +1,88 @@
-
 const express = require('express');
 const multer = require('multer');
-const { drive, auth } = require('../config/googleClients');
+const { uploadFile, getFileInfo, downloadFile } = require('../services/googleDriveService');
 const authMiddleware = require('../middleware/authMiddleware');
-const stream = require('stream'); // streamモジュールをインポート
 
 const router = express.Router();
-const upload = multer({ storage: multer.memoryStorage() }); // ファイルをメモリに一時保存
+// メモリストレージを使用してファイルを受け取る
+const upload = multer({ storage: multer.memoryStorage() });
 
-// Google Driveのアップロード先フォルダID
-const GOOGLE_DRIVE_FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID;
-
-if (!GOOGLE_DRIVE_FOLDER_ID) {
-    console.error('GOOGLE_DRIVE_FOLDER_ID is not set in .env file.');
-    // アプリケーションの起動をブロックするか、エラーハンドリングを強化する
-}
-
-// ファイルアップロードエンドポイント
+/**
+ * @route   POST /api/files/upload
+ * @desc    ファイルをGoogle Driveにアップロードする
+ * @access  Private
+ */
 router.post('/upload', authMiddleware, upload.single('file'), async (req, res) => {
     if (!req.file) {
-        return res.status(400).json({ message: 'No file uploaded.' });
+        return res.status(400).json({ message: 'ファイルが選択されていません。' });
     }
-
     try {
-        // BufferをReadableStreamに変換
-        const bufferStream = new stream.Readable();
-        bufferStream.push(req.file.buffer);
-        bufferStream.push(null); // ストリームの終わりを示す
-
-        // Google Driveにファイルをアップロード
-        const fileMetadata = {
-            name: req.file.originalname,
-            parents: [GOOGLE_DRIVE_FOLDER_ID], // 指定フォルダにアップロード
-        };
-        const media = {
-            mimeType: req.file.mimetype,
-            body: bufferStream, // ReadableStreamを渡す
-        };
-
-        const uploadedFile = await drive.files.create({
-            resource: fileMetadata,
-            media: media,
-            fields: 'id, webViewLink, webContentLink', // 必要なフィールドのみ取得
+        // googleDriveServiceを使用してファイルをアップロードし、ファイルIDを取得
+        const fileId = await uploadFile(req.file);
+        // ファイルIDからファイル情報を取得
+        const fileInfo = await getFileInfo(fileId);
+        
+        // 成功レスポンスを返す
+        res.status(201).json({
+            message: 'ファイルが正常にアップロードされました。',
+            fileId: fileInfo.id,
+            fileName: fileInfo.name,
+            mimeType: fileInfo.mimeType,
         });
-
-        // アップロードしたファイルを公開設定にする
-        await drive.permissions.create({
-            fileId: uploadedFile.data.id,
-            requestBody: {
-                role: 'reader',
-                type: 'anyone',
-            },
-        });
-
-        res.status(200).json({
-            message: 'File uploaded successfully',
-            fileId: uploadedFile.data.id,
-            webViewLink: uploadedFile.data.webViewLink, // ブラウザで開くリンク
-            webContentLink: uploadedFile.data.webContentLink, // 直接ダウンロードリンク
-        });
-
     } catch (error) {
         console.error('Error uploading file to Google Drive:', error);
-        res.status(500).json({ message: 'Failed to upload file.', error: error.message });
+        res.status(500).json({ message: 'ファイルのアップロードに失敗しました。' });
+    }
+});
+
+/**
+ * @route   GET /api/files/view/:fileId
+ * @desc    Google Drive上のファイルをストリーミングして表示する
+ * @access  Private
+ */
+router.get('/view/:fileId', authMiddleware, async (req, res) => {
+    try {
+        const { fileId } = req.params;
+        const fileInfo = await getFileInfo(fileId);
+        const fileStream = await downloadFile(fileId);
+
+        // 正しいMIMEタイプをヘッダーに設定
+        res.setHeader('Content-Type', fileInfo.mimeType);
+        // ストリームをレスポンスにパイプする
+        fileStream.pipe(res);
+
+    } catch (error) {
+        console.error('Error streaming file from Google Drive:', error);
+        if (error.response?.status === 404) {
+            return res.status(404).json({ message: 'ファイルが見つかりません。' });
+        }
+        res.status(500).json({ message: 'ファイルの表示に失敗しました。' });
+    }
+});
+
+/**
+ * @route   GET /api/files/download/:fileId
+ * @desc    Google Drive上のファイルをダウンロードする
+ * @access  Private
+ */
+router.get('/download/:fileId', authMiddleware, async (req, res) => {
+    try {
+        const { fileId } = req.params;
+        const fileInfo = await getFileInfo(fileId);
+        const fileStream = await downloadFile(fileId);
+
+        // ダウンロードを強制するためにヘッダーを設定
+        res.setHeader('Content-Type', fileInfo.mimeType);
+        res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileInfo.name)}"`);
+        // ストリームをレスポンスにパイプする
+        fileStream.pipe(res);
+
+    } catch (error) {
+        console.error('Error downloading file from Google Drive:', error);
+        if (error.response?.status === 404) {
+            return res.status(404).json({ message: 'ファイルが見つかりません。' });
+        }
+        res.status(500).json({ message: 'ファイルのダウンロードに失敗しました。' });
     }
 });
 

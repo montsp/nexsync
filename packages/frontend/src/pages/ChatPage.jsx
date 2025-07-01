@@ -26,6 +26,8 @@ import SendIcon from '@mui/icons-material/Send';
 import AddCircleOutlineIcon from '@mui/icons-material/AddCircleOutline';
 import ReplyIcon from '@mui/icons-material/Reply';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
+import AttachFileIcon from '@mui/icons-material/AttachFile'; // ファイル添付アイコン
+import { CircularProgress } from '@mui/material'; // ローディングインジケーター
 
 const ChatPage = () => {
   const { user, logout } = useAuth();
@@ -40,8 +42,11 @@ const ChatPage = () => {
   const [currentThread, setCurrentThread] = useState(null);
   const [threadMessages, setThreadMessages] = useState([]);
   const [threadRepliesCount, setThreadRepliesCount] = useState({});
+  const [isUploading, setIsUploading] = useState(false);
   const socketRef = useRef(null);
-  const messagesEndRef = useRef(null);
+  const messagesEndRef = useRef(null); // メッセージリストの末尾への参照
+  const fileInputRef = useRef(null); // メインチャットのファイルインプットへの参照
+  const threadFileInputRef = useRef(null); // スレッドのファイルインプットへの参照
 
   useEffect(() => {
     socketRef.current = io('http://localhost:3001');
@@ -52,13 +57,17 @@ const ChatPage = () => {
 
     socketRef.current.on('receiveMessage', (message) => {
       console.log('Received message:', message);
-      setMessages((prevMessages) => [...prevMessages, message]);
+      setMessages((prevMessages) => 
+        prevMessages.some(m => m.id === message.id) ? prevMessages : [...prevMessages, message]
+      );
     });
 
     socketRef.current.on('newThreadMessage', (message) => {
         console.log('Received new thread message:', message);
         if (currentThread && message.parent_message_id === currentThread.id) {
-            setThreadMessages((prev) => [...prev, message]);
+            setThreadMessages((prev) => 
+                prev.some(m => m.id === message.id) ? prev : [...prev, message]
+            );
         }
         setThreadRepliesCount(prev => ({
             ...prev,
@@ -136,18 +145,17 @@ const ChatPage = () => {
     }
   };
 
-  const handleSendMessage = () => {
-    if (messageInput.trim() && currentChannel) {
+  const handleSendMessage = (content) => {
+    if (content.trim() && currentChannel) {
       socketRef.current.emit('sendMessage', {
         channelId: currentChannel.id,
-        content: messageInput,
+        content: content,
         userId: user.id,
       }, (newMessage) => {
         if (!newMessage.error) {
             setMessages((prev) => [...prev, newMessage]);
         }
       });
-      setMessageInput('');
     }
   };
 
@@ -186,93 +194,217 @@ const ChatPage = () => {
     await logout();
   };
 
-  const renderMainChat = () => (
-    <Grid item xs={9} sx={{ display: 'flex', flexDirection: 'column' }}>
-        <Box sx={{ flexGrow: 1, p: 2, overflowY: 'auto' }}>
-        {messages.map((msg) => (
-            <Paper key={msg.id} elevation={1} sx={{ p: 2, mb: 2 }}>
-            <Typography variant="caption" display="block" sx={{ color: 'text.secondary' }}>
-                {msg.user_id} - {new Date(msg.created_at).toLocaleString()}
-            </Typography>
-            <Typography variant="body1">{msg.content}</Typography>
-            <IconButton size="small" onClick={() => openThread(msg)}>
-                <ReplyIcon />
-            </IconButton>
-            {threadRepliesCount[msg.id] > 0 && (
-                <Button size="small" onClick={() => openThread(msg)}>
-                    {threadRepliesCount[msg.id]}件の返信
-                </Button>
-            )}
-            </Paper>
-        ))}
-        <div ref={messagesEndRef} />
-        </Box>
-        <Box sx={{ p: 2, borderTop: '1px solid #e0e0e0', display: 'flex', alignItems: 'center' }}>
-        <TextField
-            fullWidth
-            variant="outlined"
-            placeholder="メッセージを入力..."
-            size="small"
-            sx={{ mr: 1 }}
-            value={messageInput}
-            onChange={(e) => setMessageInput(e.target.value)}
-            onKeyPress={(e) => {
-            if (e.key === 'Enter') {
-                handleSendMessage();
-            }
-            }}
-        />
-        <IconButton color="primary" aria-label="send message" onClick={handleSendMessage}>
-            <SendIcon />
-        </IconButton>
-        </Box>
-    </Grid>
-  );
+  const handleFileUpload = async (event, isThread) => {
+    const file = event.target.files[0];
+    if (!file) return;
 
-  const renderThreadView = () => (
-    <Grid item xs={9} sx={{ display: 'flex', flexDirection: 'column' }}>
-        <Box sx={{ p: 2, borderBottom: '1px solid #e0e0e0', display: 'flex', alignItems: 'center' }}>
-            <IconButton onClick={closeThread}>
-                <ArrowBackIcon />
-            </IconButton>
-            <Typography variant="h6" sx={{ ml: 1 }}>スレッド</Typography>
-        </Box>
-        <Box sx={{ flexGrow: 1, p: 2, overflowY: 'auto' }}>
-            {currentThread && (
-                <Paper elevation={1} sx={{ p: 2, mb: 2, backgroundColor: '#f0f0f0' }}>
-                    <Typography variant="caption" display="block" sx={{ color: 'text.secondary' }}>
-                        {currentThread.user_id} - {new Date(currentThread.created_at).toLocaleString()}
-                    </Typography>
-                    <Typography variant="body1">{currentThread.content}</Typography>
-                </Paper>
-            )}
-            <Divider>返信</Divider>
-            {threadMessages.map((msg) => (
-                <Paper key={msg.id} elevation={1} sx={{ p: 2, mt: 2 }}>
-                    <Typography variant="caption" display="block" sx={{ color: 'text.secondary' }}>
-                        {msg.user_id} - {new Date(msg.created_at).toLocaleString()}
-                    </Typography>
-                    <Typography variant="body1">{msg.content}</Typography>
-                </Paper>
-            ))}
+    setIsUploading(true);
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const response = await fetch('/api/files/upload', {
+        method: 'POST',
+        body: formData,
+        // `credentials: 'include'` は `fetch` のオプションですが、ここでは不要かもしれません。
+        // バックエンドの `authMiddleware` がセッションやトークンを期待しているかによります。
+      });
+
+      if (!response.ok) {
+        throw new Error('File upload failed');
+      }
+
+      const { fileId, fileName } = await response.json();
+      const fileMessage = `[file:${fileId}:${fileName}]`;
+
+      if (isThread) {
+        handleSendThreadMessage(fileMessage);
+      } else {
+        handleSendMessage(fileMessage);
+      }
+    } catch (error) {
+      console.error('Error uploading file:', error);
+      // ここでユーザーにエラーを通知するUIを追加するのが望ましい
+    } finally {
+      setIsUploading(false);
+      // 同じファイルを連続でアップロードできるように値をリセット
+      event.target.value = null;
+    }
+  };
+
+  const renderMainChat = () => {
+    const fileMessageRegex = /^\[file:(.+?):(.+?)\]$/;
+
+    return (
+        <Grid item xs={9} sx={{ display: 'flex', flexDirection: 'column' }}>
+            <Box sx={{ flexGrow: 1, p: 2, overflowY: 'auto' }}>
+            {messages.map((msg) => {
+                const fileMatch = msg.content.match(fileMessageRegex);
+
+                return (
+                    <Paper key={msg.id} elevation={1} sx={{ p: 2, mb: 2 }}>
+                        <Typography variant="caption" display="block" sx={{ color: 'text.secondary' }}>
+                            {msg.user_id} - {new Date(msg.created_at).toLocaleString()}
+                        </Typography>
+                        {fileMatch ? (
+                            <Box>
+                                <Typography variant="body1" sx={{ mb: 1 }}>
+                                    <strong>ファイル共有:</strong> {fileMatch[2]}
+                                </Typography>
+                                <Button 
+                                    variant="outlined" 
+                                    size="small"
+                                    href={`/api/files/download/${fileMatch[1]}`}
+                                    download
+                                    sx={{ mr: 1 }}
+                                >
+                                    ダウンロード
+                                </Button>
+                                <Box mt={2} sx={{ border: '1px solid #e0e0e0', borderRadius: '4px', overflow: 'hidden' }}>
+                                    <iframe 
+                                        src={`/api/files/view/${fileMatch[1]}`}
+                                        width="100%"
+                                        height="400px"
+                                        frameBorder="0"
+                                        title={fileMatch[2]}
+                                    ></iframe>
+                                </Box>
+                            </Box>
+                        ) : (
+                            <Typography variant="body1">{msg.content}</Typography>
+                        )}
+                        <IconButton size="small" onClick={() => openThread(msg)}>
+                            <ReplyIcon />
+                        </IconButton>
+                        {threadRepliesCount[msg.id] > 0 && (
+                            <Button size="small" onClick={() => openThread(msg)}>
+                                {threadRepliesCount[msg.id]}件の返信
+                            </Button>
+                        )}
+                    </Paper>
+                );
+            })}
             <div ref={messagesEndRef} />
-        </Box>
-        <Box sx={{ p: 2, borderTop: '1px solid #e0e0e0' }}>
-            <TextField
-                fullWidth
-                variant="outlined"
-                placeholder="返信を入力..."
-                size="small"
-                onKeyPress={(e) => {
-                    if (e.key === 'Enter' && e.target.value.trim()) {
-                        handleSendThreadMessage(e.target.value);
-                        e.target.value = '';
-                    }
-                }}
-            />
-        </Box>
-    </Grid>
-  );
+            </Box>
+            <Box sx={{ p: 2, borderTop: '1px solid #e0e0e0', display: 'flex', alignItems: 'center' }}>
+                <input 
+                    type="file" 
+                    ref={fileInputRef} 
+                    style={{ display: 'none' }} 
+                    onChange={(e) => handleFileUpload(e, false)}
+                />
+                <IconButton onClick={() => fileInputRef.current.click()} disabled={isUploading}>
+                    {isUploading ? <CircularProgress size={24} /> : <AttachFileIcon />}
+                </IconButton>
+                <TextField
+                    fullWidth
+                    variant="outlined"
+                    placeholder="メッセージを入力..."
+                    size="small"
+                    sx={{ mr: 1 }}
+                    value={messageInput}
+                    onChange={(e) => setMessageInput(e.target.value)}
+                    onKeyPress={(e) => {
+                        if (e.key === 'Enter') {
+                            handleSendMessage(messageInput);
+                            setMessageInput('');
+                        }
+                    }}
+                />
+                <IconButton color="primary" aria-label="send message" onClick={() => { handleSendMessage(messageInput); setMessageInput(''); }}>
+                    <SendIcon />
+                </IconButton>
+            </Box>
+        </Grid>
+    );
+  };
+
+  const renderThreadView = (threadFileInputRef) => {
+    const fileMessageRegex = /^\[file:(.+?):(.+?)\]$/;
+
+    return (
+        <Grid item xs={9} sx={{ display: 'flex', flexDirection: 'column' }}>
+            <Box sx={{ p: 2, borderBottom: '1px solid #e0e0e0', display: 'flex', alignItems: 'center' }}>
+                <IconButton onClick={closeThread}>
+                    <ArrowBackIcon />
+                </IconButton>
+                <Typography variant="h6" sx={{ ml: 1 }}>スレッド</Typography>
+            </Box>
+            <Box sx={{ flexGrow: 1, p: 2, overflowY: 'auto' }}>
+                {currentThread && (
+                    <Paper elevation={1} sx={{ p: 2, mb: 2, backgroundColor: '#f0f0f0' }}>
+                        <Typography variant="caption" display="block" sx={{ color: 'text.secondary' }}>
+                            {currentThread.user_id} - {new Date(currentThread.created_at).toLocaleString()}
+                        </Typography>
+                        <Typography variant="body1">{currentThread.content}</Typography>
+                    </Paper>
+                )}
+                <Divider>返信</Divider>
+                {threadMessages.map((msg) => {
+                    const fileMatch = msg.content.match(fileMessageRegex);
+                    return (
+                        <Paper key={msg.id} elevation={1} sx={{ p: 2, mt: 2 }}>
+                            <Typography variant="caption" display="block" sx={{ color: 'text.secondary' }}>
+                                {msg.user_id} - {new Date(msg.created_at).toLocaleString()}
+                            </Typography>
+                            {fileMatch ? (
+                                <Box>
+                                    <Typography variant="body1" sx={{ mb: 1 }}>
+                                        <strong>ファイル共有:</strong> {fileMatch[2]}
+                                    </Typography>
+                                    <Button 
+                                        variant="outlined" 
+                                        size="small"
+                                        href={`/api/files/download/${fileMatch[1]}`}
+                                        download
+                                        sx={{ mr: 1 }}
+                                    >
+                                        ダウンロード
+                                    </Button>
+                                    <Box mt={2} sx={{ border: '1px solid #e0e0e0', borderRadius: '4px', overflow: 'hidden' }}>
+                                        <iframe 
+                                            src={`/api/files/view/${fileMatch[1]}`}
+                                            width="100%"
+                                            height="400px"
+                                            frameBorder="0"
+                                            title={fileMatch[2]}
+                                        ></iframe>
+                                    </Box>
+                                </Box>
+                            ) : (
+                                <Typography variant="body1">{msg.content}</Typography>
+                            )}
+                        </Paper>
+                    );
+                })}
+                <div ref={messagesEndRef} />
+            </Box>
+            <Box sx={{ p: 2, borderTop: '1px solid #e0e0e0', display: 'flex', alignItems: 'center' }}>
+                <input 
+                    type="file" 
+                    ref={threadFileInputRef} 
+                    style={{ display: 'none' }} 
+                    onChange={(e) => handleFileUpload(e, true)}
+                />
+                <IconButton onClick={() => threadFileInputRef.current.click()} disabled={isUploading}>
+                    {isUploading ? <CircularProgress size={24} /> : <AttachFileIcon />}
+                </IconButton>
+                <TextField
+                    fullWidth
+                    variant="outlined"
+                    placeholder="返信を入力..."
+                    size="small"
+                    onKeyPress={(e) => {
+                        if (e.key === 'Enter' && e.target.value.trim()) {
+                            handleSendThreadMessage(e.target.value);
+                            e.target.value = '';
+                        }
+                    }}
+                />
+            </Box>
+        </Grid>
+    );
+  };
 
   return (
     <Box sx={{ flexGrow: 1, height: '100vh', display: 'flex', flexDirection: 'column' }}>
@@ -310,7 +442,7 @@ const ChatPage = () => {
           </Box>
         </Grid>
 
-        {currentThread ? renderThreadView() : renderMainChat()}
+        {currentThread ? renderThreadView(threadFileInputRef) : renderMainChat()}
 
       </Grid>
 
