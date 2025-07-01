@@ -48,6 +48,8 @@ const ChatPage = () => {
   const fileInputRef = useRef(null); // メインチャットのファイルインプットへの参照
   const threadFileInputRef = useRef(null); // スレッドのファイルインプットへの参照
 
+  const fileMessageRegex = /^\[file:(.+?):(.+?)\]$/;
+
   useEffect(() => {
     socketRef.current = io('http://localhost:3001');
 
@@ -101,7 +103,7 @@ const ChatPage = () => {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, threadMessages]);
+  }, [messages]);
 
   const fetchChannels = async () => {
     try {
@@ -120,7 +122,11 @@ const ChatPage = () => {
     try {
       const response = await fetch(`/api/channels/${channelId}/messages?page=${page}&limit=20`);
       const data = await response.json();
-      setMessages(prev => [...prev, ...data]);
+      if (page === 1) {
+        setMessages(data.reverse()); // 新しい順で取得するので逆順にして表示
+      } else {
+        setMessages(prev => [...data.reverse(), ...prev]);
+      }
       setHasMore(data.length > 0);
     } catch (error) {
       console.error('Failed to fetch messages:', error);
@@ -233,10 +239,9 @@ const ChatPage = () => {
   };
 
   const renderMainChat = () => {
-    const fileMessageRegex = /^\[file:(.+?):(.+?)\]$/;
 
     return (
-        <Grid item xs={9} sx={{ display: 'flex', flexDirection: 'column' }}>
+        <Grid item xs={9} sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
             <Box sx={{ flexGrow: 1, p: 2, overflowY: 'auto' }}>
             {messages.map((msg) => {
                 const fileMatch = msg.content.match(fileMessageRegex);
@@ -323,7 +328,7 @@ const ChatPage = () => {
     const fileMessageRegex = /^\[file:(.+?):(.+?)\]$/;
 
     return (
-        <Grid item xs={9} sx={{ display: 'flex', flexDirection: 'column' }}>
+        <Grid item xs={9} sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
             <Box sx={{ p: 2, borderBottom: '1px solid #e0e0e0', display: 'flex', alignItems: 'center' }}>
                 <IconButton onClick={closeThread}>
                     <ArrowBackIcon />
@@ -421,8 +426,8 @@ const ChatPage = () => {
         </Toolbar>
       </AppBar>
 
-      <Grid container sx={{ flexGrow: 1, overflow: 'hidden' }}>
-        <Grid item xs={3} sx={{ borderRight: '1px solid #e0e0e0', display: 'flex', flexDirection: 'column' }}>
+      <Grid container sx={{ flexGrow: 1, overflow: 'hidden', height: 'calc(100vh - 64px)' }}>
+        <Grid item xs={3} sx={{ borderRight: '1px solid #e0e0e0', display: 'flex', flexDirection: 'column', height: '100%' }}>
           <Box sx={{ p: 2, borderBottom: '1px solid #e0e0e0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <Typography variant="h6">チャンネル</Typography>
             <IconButton onClick={() => setOpenNewChannelDialog(true)}>

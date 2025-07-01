@@ -4,27 +4,18 @@ const { uploadFile, getFileInfo, downloadFile } = require('../services/googleDri
 const authMiddleware = require('../middleware/authMiddleware');
 
 const router = express.Router();
-// メモリストレージを使用してファイルを受け取る
 const upload = multer({ storage: multer.memoryStorage() });
 
-/**
- * @route   POST /api/files/upload
- * @desc    ファイルをGoogle Driveにアップロードする
- * @access  Private
- */
+// ファイルアップロードAPI
 router.post('/upload', authMiddleware, upload.single('file'), async (req, res) => {
     if (!req.file) {
         return res.status(400).json({ message: 'ファイルが選択されていません。' });
     }
     try {
-        // googleDriveServiceを使用してファイルをアップロードし、ファイルIDを取得
         const fileId = await uploadFile(req.file);
-        // ファイルIDからファイル情報を取得
         const fileInfo = await getFileInfo(fileId);
-        
-        // 成功レスポンスを返す
-        res.status(201).json({
-            message: 'ファイルが正常にアップロードされました。',
+        res.status(201).json({ 
+            message: 'ファイルが正常にアップロードされました。', 
             fileId: fileInfo.id,
             fileName: fileInfo.name,
             mimeType: fileInfo.mimeType,
@@ -35,50 +26,76 @@ router.post('/upload', authMiddleware, upload.single('file'), async (req, res) =
     }
 });
 
-/**
- * @route   GET /api/files/view/:fileId
- * @desc    Google Drive上のファイルをストリーミングして表示する
- * @access  Private
- */
+// ファイル表示用のHTMLラッパーを返すAPI
 router.get('/view/:fileId', authMiddleware, async (req, res) => {
     try {
         const { fileId } = req.params;
         const fileInfo = await getFileInfo(fileId);
-        const fileStream = await downloadFile(fileId);
 
-        // 正しいMIMEタイプをヘッダーに設定
-        res.setHeader('Content-Type', fileInfo.mimeType);
-        // ストリームをレスポンスにパイプする
-        fileStream.pipe(res);
-
-    } catch (error) {
-        console.error('Error streaming file from Google Drive:', error);
-        if (error.response?.status === 404) {
-            return res.status(404).json({ message: 'ファイルが見つかりません。' });
+        // MIMEタイプに基づいて適切なHTMLを生成
+        let contentHtml;
+        if (fileInfo.mimeType.startsWith('image/')) {
+            contentHtml = `<img src="/api/files/raw/${fileId}" alt="${fileInfo.name}">`;
+        } else if (fileInfo.mimeType === 'application/pdf') {
+            contentHtml = `<embed src="/api/files/raw/${fileId}" type="application/pdf" width="100%" height="100%">`;
+        } else {
+            contentHtml = `<div class="unsupported"><p>このファイルのプレビューはサポートされていません。</p><a href="/api/files/download/${fileId}" download>「${fileInfo.name}」をダウンロード</a></div>`;
         }
+
+        const html = `
+            <!DOCTYPE html>
+            <html lang="ja">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>プレビュー: ${fileInfo.name}</title>
+                <style>
+                    body, html { margin: 0; padding: 0; width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; background-color: #f0f0f0; font-family: sans-serif; }
+                    img, embed { max-width: 100%; max-height: 100%; object-fit: contain; }
+                    .unsupported { text-align: center; padding: 20px; }
+                </style>
+            </head>
+            <body>
+                ${contentHtml}
+            </body>
+            </html>
+        `;
+        res.setHeader('Content-Type', 'text/html');
+        res.send(html);
+    } catch (error) {
+        console.error('Error generating file view:', error);
         res.status(500).json({ message: 'ファイルの表示に失敗しました。' });
     }
 });
 
-/**
- * @route   GET /api/files/download/:fileId
- * @desc    Google Drive上のファイルをダウンロードする
- * @access  Private
- */
+// 生のファイルデータをストリーミングするAPI
+router.get('/raw/:fileId', authMiddleware, async (req, res) => {
+    try {
+        const { fileId } = req.params;
+        const fileInfo = await getFileInfo(fileId);
+        const fileStream = await downloadFile(fileId);
+        res.setHeader('Content-Type', fileInfo.mimeType);
+        fileStream.pipe(res);
+    } catch (error) {
+        console.error('Error streaming raw file:', error);
+        if (error.response?.status === 404) {
+            return res.status(404).json({ message: 'ファイルが見つかりません。' });
+        }
+        res.status(500).json({ message: 'ファイルの取得に失敗しました。' });
+    }
+});
+
+// ファイルダウンロードAPI
 router.get('/download/:fileId', authMiddleware, async (req, res) => {
     try {
         const { fileId } = req.params;
         const fileInfo = await getFileInfo(fileId);
         const fileStream = await downloadFile(fileId);
-
-        // ダウンロードを強制するためにヘッダーを設定
         res.setHeader('Content-Type', fileInfo.mimeType);
         res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileInfo.name)}"`);
-        // ストリームをレスポンスにパイプする
         fileStream.pipe(res);
-
     } catch (error) {
-        console.error('Error downloading file from Google Drive:', error);
+        console.error('Error downloading file:', error);
         if (error.response?.status === 404) {
             return res.status(404).json({ message: 'ファイルが見つかりません。' });
         }
