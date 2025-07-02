@@ -20,14 +20,25 @@ import {
   DialogTitle,
   DialogContent,
   DialogActions,
+  CircularProgress,
+  Menu,
+  MenuItem,
+  Chip,
 } from '@mui/material';
 
 import SendIcon from '@mui/icons-material/Send';
 import AddCircleOutlineIcon from '@mui/icons-material/AddCircleOutline';
 import ReplyIcon from '@mui/icons-material/Reply';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
-import AttachFileIcon from '@mui/icons-material/AttachFile'; // ファイル添付アイコン
-import { CircularProgress } from '@mui/material'; // ローディングインジケーター
+import AttachFileIcon from '@mui/icons-material/AttachFile';
+import MoreVertIcon from '@mui/icons-material/MoreVert';
+import MoodIcon from '@mui/icons-material/Mood';
+
+const Mention = ({ children }) => (
+    <span style={{ backgroundColor: '#e0e0ff', fontWeight: 'bold', borderRadius: '4px', padding: '2px 4px' }}>
+        @{children}
+    </span>
+);
 
 const ChatPage = () => {
   const { user, logout } = useAuth();
@@ -43,38 +54,49 @@ const ChatPage = () => {
   const [threadMessages, setThreadMessages] = useState([]);
   const [threadRepliesCount, setThreadRepliesCount] = useState({});
   const [isUploading, setIsUploading] = useState(false);
+  
+  const [editingMessageId, setEditingMessageId] = useState(null);
+  const [editingContent, setEditingContent] = useState('');
+  const [anchorEl, setAnchorEl] = useState(null);
+  const [selectedMessageId, setSelectedMessageId] = useState(null);
+
   const socketRef = useRef(null);
-  const messagesEndRef = useRef(null); // メッセージリストの末尾への参照
-  const fileInputRef = useRef(null); // メインチャットのファイルインプットへの参照
-  const threadFileInputRef = useRef(null); // スレッドのファイルインプットへの参照
+  const messagesEndRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const threadFileInputRef = useRef(null);
 
   const fileMessageRegex = /^\[file:(.+?):(.+?)\]$/;
 
   useEffect(() => {
     socketRef.current = io('http://localhost:3001');
 
-    socketRef.current.on('connect', () => {
-      console.log('Connected to socket server');
-    });
+    socketRef.current.on('connect', () => console.log('Connected to socket server'));
 
-    socketRef.current.on('receiveMessage', (message) => {
-      console.log('Received message:', message);
-      setMessages((prevMessages) => 
-        prevMessages.some(m => m.id === message.id) ? prevMessages : [...prevMessages, message]
-      );
-    });
-
-    socketRef.current.on('newThreadMessage', (message) => {
-        console.log('Received new thread message:', message);
+    socketRef.current.on('new_message', (message) => {
+      console.log('Received new_message:', message);
+      if (message.parent_message_id) {
         if (currentThread && message.parent_message_id === currentThread.id) {
-            setThreadMessages((prev) => 
-                prev.some(m => m.id === message.id) ? prev : [...prev, message]
-            );
+            setThreadMessages((prev) => [...prev, message]);
         }
         setThreadRepliesCount(prev => ({
             ...prev,
             [message.parent_message_id]: (prev[message.parent_message_id] || 0) + 1
         }));
+      } else {
+        setMessages((prev) => [...prev, message]);
+      }
+    });
+
+    socketRef.current.on('message_updated', (updatedMessage) => {
+        console.log('Received message_updated:', updatedMessage);
+        setMessages((prev) => prev.map(m => m.id === updatedMessage.id ? updatedMessage : m));
+        setThreadMessages((prev) => prev.map(m => m.id === updatedMessage.id ? updatedMessage : m));
+    });
+
+    socketRef.current.on('message_deleted', ({ id }) => {
+        console.log('Received message_deleted:', id);
+        setMessages((prev) => prev.filter(m => m.id !== id));
+        setThreadMessages((prev) => prev.filter(m => m.id !== id));
     });
 
     fetchChannels();
@@ -82,7 +104,7 @@ const ChatPage = () => {
     return () => {
       socketRef.current.disconnect();
     };
-  }, []);
+  }, [currentThread]);
 
   useEffect(() => {
     if (currentChannel) {
@@ -90,20 +112,22 @@ const ChatPage = () => {
       setPage(1);
       setHasMore(true);
       fetchMessages(currentChannel.id, 1);
-      socketRef.current.emit('joinChannel', currentChannel.id);
-      setCurrentThread(null); // チャンネル切り替え時にスレッドを閉じる
+      if (socketRef.current.connected) {
+        socketRef.current.emit('joinChannel', currentChannel.id.toString());
+      }
+      setCurrentThread(null);
     }
 
     return () => {
-      if (currentChannel) {
-        socketRef.current.emit('leaveChannel', currentChannel.id);
+      if (currentChannel && socketRef.current.connected) {
+        socketRef.current.emit('leaveChannel', currentChannel.id.toString());
       }
     };
   }, [currentChannel]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [messages, threadMessages]);
 
   const fetchChannels = async () => {
     try {
@@ -123,7 +147,7 @@ const ChatPage = () => {
       const response = await fetch(`/api/channels/${channelId}/messages?page=${page}&limit=20`);
       const data = await response.json();
       if (page === 1) {
-        setMessages(data.reverse()); // 新しい順で取得するので逆順にして表示
+        setMessages(data.reverse());
       } else {
         setMessages(prev => [...data.reverse(), ...prev]);
       }
@@ -139,7 +163,6 @@ const ChatPage = () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: newChannelName }),
-        credentials: 'include',
       });
       const newChannel = await response.json();
       setChannels([...channels, newChannel]);
@@ -151,32 +174,116 @@ const ChatPage = () => {
     }
   };
 
-  const handleSendMessage = (content) => {
-    if (content.trim() && currentChannel) {
-      socketRef.current.emit('sendMessage', {
-        channelId: currentChannel.id,
-        content: content,
-        userId: user.id,
-      }, (newMessage) => {
-        if (!newMessage.error) {
-            setMessages((prev) => [...prev, newMessage]);
-        }
-      });
+  const handleSendMessage = async (content, parentId = null) => {
+    if (!content.trim() || !currentChannel) return;
+
+    try {
+        await fetch('/api/messages', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                channel_id: currentChannel.id,
+                content: content,
+                parent_message_id: parentId,
+            }),
+        });
+    } catch (error) {
+        console.error('Failed to send message:', error);
     }
   };
 
-  const handleSendThreadMessage = (threadMessage) => {
-    if (threadMessage.trim() && currentThread) {
-        socketRef.current.emit('sendMessage', {
-            channelId: currentChannel.id,
-            content: threadMessage,
-            userId: user.id,
-            parent_message_id: currentThread.id,
-        }, (newMessage) => {
-            if (!newMessage.error) {
-                setThreadMessages((prev) => [...prev, newMessage]);
-            }
+  const handleToggleReaction = async (messageId, emoji) => {
+    try {
+        await fetch(`/api/messages/${messageId}/toggle-reaction`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ emoji }),
         });
+    } catch (error) {
+        console.error('Failed to toggle reaction:', error);
+    }
+  };
+
+  const handleUpdateMessage = async () => {
+    if (!editingContent.trim() || !editingMessageId) return;
+    try {
+        await fetch(`/api/messages/${editingMessageId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: editingContent }),
+        });
+        cancelEditing();
+    } catch (error) {
+        console.error('Failed to update message:', error);
+    }
+  };
+
+  const handleDeleteMessage = async (messageId) => {
+    if (window.confirm('本当にこのメッセージを削除しますか？')) {
+        try {
+            await fetch(`/api/messages/${messageId}`, {
+                method: 'DELETE',
+            });
+        } catch (error) {
+            console.error('Failed to delete message:', error);
+        }
+    }
+  };
+
+  const startEditing = (message) => {
+    setEditingMessageId(message.id);
+    setEditingContent(message.content);
+    handleMenuClose();
+  };
+
+  const cancelEditing = () => {
+    setEditingMessageId(null);
+    setEditingContent('');
+  };
+
+  const handleMenuOpen = (event, messageId) => {
+    setAnchorEl(event.currentTarget);
+    setSelectedMessageId(messageId);
+  };
+
+  const handleMenuClose = () => {
+    setAnchorEl(null);
+    setSelectedMessageId(null);
+  };
+
+  const handleLogout = async () => {
+    await logout();
+  };
+
+  const handleFileUpload = async (event, isThread) => {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    setIsUploading(true);
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const response = await fetch('/api/files/upload', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) throw new Error('File upload failed');
+
+      const { fileId, fileName } = await response.json();
+      const fileMessage = `[file:${fileId}:${fileName}]`;
+
+      if (isThread) {
+        handleSendMessage(fileMessage, currentThread.id);
+      } else {
+        handleSendMessage(fileMessage);
+      }
+    } catch (error) {
+      console.error('Error uploading file:', error);
+    } finally {
+      setIsUploading(false);
+      event.target.value = null;
     }
   };
 
@@ -196,100 +303,128 @@ const ChatPage = () => {
     setThreadMessages([]);
   };
 
-  const handleLogout = async () => {
-    await logout();
+  const renderMessageContent = (msg) => {
+    const fileMatch = msg.content.match(fileMessageRegex);
+    if (fileMatch) {
+        return (
+            <Box>
+                <Typography variant="body1" sx={{ mb: 1 }}>
+                    <strong>ファイル共有:</strong> {fileMatch[2]}
+                </Typography>
+                <Button 
+                    variant="outlined" 
+                    size="small"
+                    href={`/api/files/download/${fileMatch[1]}`}
+                    download
+                    sx={{ mr: 1 }}
+                >
+                    ダウンロード
+                </Button>
+                <Box mt={2} sx={{ border: '1px solid #e0e0e0', borderRadius: '4px', overflow: 'hidden' }}>
+                    <iframe 
+                        src={`/api/files/view/${fileMatch[1]}`}
+                        width="100%"
+                        height="400px"
+                        frameBorder="0"
+                        title={fileMatch[2]}
+                    ></iframe>
+                </Box>
+            </Box>
+        );
+    }
+
+    const contentWithMentions = msg.content.split(/(@\w+)/g).map((part, index) => {
+        if (part.startsWith('@')) {
+            const username = part.substring(1);
+            if (username === user.username) {
+                return <Mention key={index}>{username}</Mention>;
+            }
+        }
+        return part;
+    });
+
+    return <Typography variant="body1">{contentWithMentions}</Typography>;
   };
 
-  const handleFileUpload = async (event, isThread) => {
-    const file = event.target.files[0];
-    if (!file) return;
+  const renderMessage = (msg, isThread = false) => {
+    const isEditing = editingMessageId === msg.id;
+    const isAuthor = msg.user_id === user.id;
+    
+    const aggregatedReactions = (msg.reactions || []).reduce((acc, reaction) => {
+        if (!acc[reaction.emoji]) {
+            acc[reaction.emoji] = { count: 0, users: [] };
+        }
+        acc[reaction.emoji].count++;
+        acc[reaction.emoji].users.push(reaction.user_id);
+        return acc;
+    }, {});
 
-    setIsUploading(true);
-    const formData = new FormData();
-    formData.append('file', file);
+    return (
+        <Paper key={msg.id} elevation={1} sx={{ p: 2, mb: 2, position: 'relative' }}>
+            <Typography variant="caption" display="block" sx={{ color: 'text.secondary' }}>
+                {msg.user_id} - {new Date(msg.created_at).toLocaleString()} {msg.is_edited && '(編集済み)'}
+            </Typography>
 
-    try {
-      const response = await fetch('/api/files/upload', {
-        method: 'POST',
-        body: formData,
-        // `credentials: 'include'` は `fetch` のオプションですが、ここでは不要かもしれません。
-        // バックエンドの `authMiddleware` がセッションやトークンを期待しているかによります。
-      });
+            {isEditing ? (
+                <Box>
+                    <TextField
+                        fullWidth
+                        variant="outlined"
+                        size="small"
+                        value={editingContent}
+                        onChange={(e) => setEditingContent(e.target.value)}
+                    />
+                    <Button size="small" onClick={handleUpdateMessage}>保存</Button>
+                    <Button size="small" onClick={cancelEditing}>キャンセル</Button>
+                </Box>
+            ) : (
+                renderMessageContent(msg)
+            )}
 
-      if (!response.ok) {
-        throw new Error('File upload failed');
-      }
+            <Box sx={{ mt: 1, display: 'flex', gap: 0.5 }}>
+                {Object.entries(aggregatedReactions).map(([emoji, data]) => (
+                    <Chip
+                        key={emoji}
+                        icon={<Typography>{emoji}</Typography>}
+                        label={data.count}
+                        onClick={() => handleToggleReaction(msg.id, emoji)}
+                        size="small"
+                        variant={data.users.includes(user.id) ? "filled" : "outlined"}
+                    />
+                ))}
+            </Box>
 
-      const { fileId, fileName } = await response.json();
-      const fileMessage = `[file:${fileId}:${fileName}]`;
-
-      if (isThread) {
-        handleSendThreadMessage(fileMessage);
-      } else {
-        handleSendMessage(fileMessage);
-      }
-    } catch (error) {
-      console.error('Error uploading file:', error);
-      // ここでユーザーにエラーを通知するUIを追加するのが望ましい
-    } finally {
-      setIsUploading(false);
-      // 同じファイルを連続でアップロードできるように値をリセット
-      event.target.value = null;
-    }
+            <Box sx={{ position: 'absolute', top: 8, right: 8 }}>
+                <IconButton size="small" onClick={() => handleToggleReaction(msg.id, '👍')}>
+                    <MoodIcon />
+                </IconButton>
+                {!isThread && (
+                    <IconButton size="small" onClick={() => openThread(msg)}>
+                        <ReplyIcon />
+                    </IconButton>
+                )}
+                {isAuthor && (
+                    <IconButton size="small" onClick={(e) => handleMenuOpen(e, msg.id)}>
+                        <MoreVertIcon />
+                    </IconButton>
+                )}
+            </Box>
+            
+            {!isThread && threadRepliesCount[msg.id] > 0 && (
+                <Button size="small" onClick={() => openThread(msg)}>
+                    {threadRepliesCount[msg.id]}件の返信
+                </Button>
+            )}
+        </Paper>
+    );
   };
 
   const renderMainChat = () => {
-
     return (
         <Grid item xs={9} sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
             <Box sx={{ flexGrow: 1, p: 2, overflowY: 'auto' }}>
-            {messages.map((msg) => {
-                const fileMatch = msg.content.match(fileMessageRegex);
-
-                return (
-                    <Paper key={msg.id} elevation={1} sx={{ p: 2, mb: 2 }}>
-                        <Typography variant="caption" display="block" sx={{ color: 'text.secondary' }}>
-                            {msg.user_id} - {new Date(msg.created_at).toLocaleString()}
-                        </Typography>
-                        {fileMatch ? (
-                            <Box>
-                                <Typography variant="body1" sx={{ mb: 1 }}>
-                                    <strong>ファイル共有:</strong> {fileMatch[2]}
-                                </Typography>
-                                <Button 
-                                    variant="outlined" 
-                                    size="small"
-                                    href={`/api/files/download/${fileMatch[1]}`}
-                                    download
-                                    sx={{ mr: 1 }}
-                                >
-                                    ダウンロード
-                                </Button>
-                                <Box mt={2} sx={{ border: '1px solid #e0e0e0', borderRadius: '4px', overflow: 'hidden' }}>
-                                    <iframe 
-                                        src={`/api/files/view/${fileMatch[1]}`}
-                                        width="100%"
-                                        height="400px"
-                                        frameBorder="0"
-                                        title={fileMatch[2]}
-                                    ></iframe>
-                                </Box>
-                            </Box>
-                        ) : (
-                            <Typography variant="body1">{msg.content}</Typography>
-                        )}
-                        <IconButton size="small" onClick={() => openThread(msg)}>
-                            <ReplyIcon />
-                        </IconButton>
-                        {threadRepliesCount[msg.id] > 0 && (
-                            <Button size="small" onClick={() => openThread(msg)}>
-                                {threadRepliesCount[msg.id]}件の返信
-                            </Button>
-                        )}
-                    </Paper>
-                );
-            })}
-            <div ref={messagesEndRef} />
+                {messages.map((msg) => renderMessage(msg))}
+                <div ref={messagesEndRef} />
             </Box>
             <Box sx={{ p: 2, borderTop: '1px solid #e0e0e0', display: 'flex', alignItems: 'center' }}>
                 <input 
@@ -304,19 +439,20 @@ const ChatPage = () => {
                 <TextField
                     fullWidth
                     variant="outlined"
-                    placeholder="メッセージを入力..."
+                    placeholder="メッセージを入力... (@でメンション)"
                     size="small"
                     sx={{ mr: 1 }}
                     value={messageInput}
                     onChange={(e) => setMessageInput(e.target.value)}
                     onKeyPress={(e) => {
-                        if (e.key === 'Enter') {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                            e.preventDefault();
                             handleSendMessage(messageInput);
                             setMessageInput('');
                         }
                     }}
                 />
-                <IconButton color="primary" aria-label="send message" onClick={() => { handleSendMessage(messageInput); setMessageInput(''); }}>
+                <IconButton color="primary" onClick={() => { handleSendMessage(messageInput); setMessageInput(''); }}>
                     <SendIcon />
                 </IconButton>
             </Box>
@@ -324,9 +460,7 @@ const ChatPage = () => {
     );
   };
 
-  const renderThreadView = (threadFileInputRef) => {
-    const fileMessageRegex = /^\[file:(.+?):(.+?)\]$/;
-
+  const renderThreadView = () => {
     return (
         <Grid item xs={9} sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
             <Box sx={{ p: 2, borderBottom: '1px solid #e0e0e0', display: 'flex', alignItems: 'center' }}>
@@ -336,52 +470,9 @@ const ChatPage = () => {
                 <Typography variant="h6" sx={{ ml: 1 }}>スレッド</Typography>
             </Box>
             <Box sx={{ flexGrow: 1, p: 2, overflowY: 'auto' }}>
-                {currentThread && (
-                    <Paper elevation={1} sx={{ p: 2, mb: 2, backgroundColor: '#f0f0f0' }}>
-                        <Typography variant="caption" display="block" sx={{ color: 'text.secondary' }}>
-                            {currentThread.user_id} - {new Date(currentThread.created_at).toLocaleString()}
-                        </Typography>
-                        <Typography variant="body1">{currentThread.content}</Typography>
-                    </Paper>
-                )}
+                {currentThread && renderMessage(currentThread, true)}
                 <Divider>返信</Divider>
-                {threadMessages.map((msg) => {
-                    const fileMatch = msg.content.match(fileMessageRegex);
-                    return (
-                        <Paper key={msg.id} elevation={1} sx={{ p: 2, mt: 2 }}>
-                            <Typography variant="caption" display="block" sx={{ color: 'text.secondary' }}>
-                                {msg.user_id} - {new Date(msg.created_at).toLocaleString()}
-                            </Typography>
-                            {fileMatch ? (
-                                <Box>
-                                    <Typography variant="body1" sx={{ mb: 1 }}>
-                                        <strong>ファイル共有:</strong> {fileMatch[2]}
-                                    </Typography>
-                                    <Button 
-                                        variant="outlined" 
-                                        size="small"
-                                        href={`/api/files/download/${fileMatch[1]}`}
-                                        download
-                                        sx={{ mr: 1 }}
-                                    >
-                                        ダウンロード
-                                    </Button>
-                                    <Box mt={2} sx={{ border: '1px solid #e0e0e0', borderRadius: '4px', overflow: 'hidden' }}>
-                                        <iframe 
-                                            src={`/api/files/view/${fileMatch[1]}`}
-                                            width="100%"
-                                            height="400px"
-                                            frameBorder="0"
-                                            title={fileMatch[2]}
-                                        ></iframe>
-                                    </Box>
-                                </Box>
-                            ) : (
-                                <Typography variant="body1">{msg.content}</Typography>
-                            )}
-                        </Paper>
-                    );
-                })}
+                {threadMessages.map((msg) => renderMessage(msg, true))}
                 <div ref={messagesEndRef} />
             </Box>
             <Box sx={{ p: 2, borderTop: '1px solid #e0e0e0', display: 'flex', alignItems: 'center' }}>
@@ -400,8 +491,9 @@ const ChatPage = () => {
                     placeholder="返信を入力..."
                     size="small"
                     onKeyPress={(e) => {
-                        if (e.key === 'Enter' && e.target.value.trim()) {
-                            handleSendThreadMessage(e.target.value);
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                            e.preventDefault();
+                            handleSendMessage(e.target.value, currentThread.id);
                             e.target.value = '';
                         }
                     }}
@@ -447,7 +539,7 @@ const ChatPage = () => {
           </Box>
         </Grid>
 
-        {currentThread ? renderThreadView(threadFileInputRef) : renderMainChat()}
+        {currentThread ? renderThreadView() : renderMainChat()}
 
       </Grid>
 
@@ -461,6 +553,19 @@ const ChatPage = () => {
           <Button onClick={handleCreateChannel}>作成</Button>
         </DialogActions>
       </Dialog>
+
+      <Menu
+        anchorEl={anchorEl}
+        open={Boolean(anchorEl)}
+        onClose={handleMenuClose}
+      >
+        <MenuItem onClick={() => startEditing(messages.find(m => m.id === selectedMessageId) || threadMessages.find(m => m.id === selectedMessageId))}>
+            編集
+        </MenuItem>
+        <MenuItem onClick={() => { handleDeleteMessage(selectedMessageId); handleMenuClose(); }}>
+            削除
+        </MenuItem>
+      </Menu>
     </Box>
   );
 };

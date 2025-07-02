@@ -89,7 +89,27 @@ async function createUser({ username, password_hash }) {
     }
 }
 
+/**
+ * ユーザー名リストで複数のユーザーを検索する
+ * @param {Array<string>} usernames - 検索するユーザー名の配列
+ * @returns {Promise<Array<Object>>} 見つかったユーザーオブジェクトの配列
+ */
+async function findUsersByUsernames(usernames) {
+    if (!usernames || usernames.length === 0) {
+        return [];
+    }
+    try {
+        const allUsers = await getAllUsers();
+        const users = allUsers.filter(u => usernames.includes(u.username));
+        return users;
+    } catch (error) {
+        console.error('Error finding users by usernames:', error);
+        throw new Error('Failed to access the user sheet.');
+    }
+}
+
 module.exports = {
     findUserByUsername,
+    findUsersByUsernames,
     createUser,
 };

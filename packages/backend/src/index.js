@@ -36,6 +36,11 @@ app.get('/api', (req, res) => {
   res.json({ message: 'Welcome to NexSync API' });
 });
 
+app.use((req, res, next) => {
+    req.io = io;
+    next();
+});
+
 app.use('/api/auth', authRoutes);
 app.use('/api/channels', channelRoutes);
 app.use('/api/messages', messageRoutes);
@@ -52,28 +57,6 @@ io.on('connection', (socket) => {
     socket.on('leaveChannel', (channelId) => {
         socket.leave(channelId);
         console.log(`User left channel: ${channelId}`);
-    });
-
-    socket.on('sendMessage', async ({ channelId, userId, content, parent_message_id }, callback) => {
-        try {
-            const message = await messageModel.createMessage({ channel_id: channelId, user_id: userId, content, parent_message_id });
-            if (parent_message_id) {
-                // スレッドの更新を「送信者以外の」チャンネルの全員に通知
-                socket.broadcast.to(channelId).emit('newThreadMessage', message);
-            } else {
-                // 新しいメッセージを「送信者以外の」チャンネルの全員に通知
-                socket.broadcast.to(channelId).emit('receiveMessage', message);
-            }
-            // 送信者自身にメッセージを返して即時表示させる
-            if (callback) {
-                callback(message);
-            }
-        } catch (error) {
-            console.error('Error sending message:', error);
-            if (callback) {
-                callback({ error: 'Failed to send message' });
-            }
-        }
     });
 
     socket.on('disconnect', () => {
